@@ -85,7 +85,9 @@ This document recommends a standard mechanism for deploying an arbitrary contain
 
 Kubelet (responsible for mount and unmount) will communicate with an external “CSI volume driver” running on the same host machine (whether containerized or not) via a Unix Domain Socket.
 
-CSI volume drivers should create a socket at the following path on the node machine: `/var/lib/kubelet/plugins/csi/sockets/[driverName]/kubeletproxy.sock`. For alpha, kubelet will assume this is the location for the Unix Domain Socket to talk to the CSI volume driver. For the beta implementation, we can consider using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism to register the Unix Domain Socket with kubelet. This mechanism would need to be extended to support registration of both CSI volume drivers and device plugins independently.
+CSI volume drivers should create a socket at the following path on the node machine: `/var/lib/kubelet/plugins/[SanitizedCSIDriverName]/csi.sock`. For alpha, kubelet will assume this is the location for the Unix Domain Socket to talk to the CSI volume driver. For the beta implementation, we can consider using the [Device Plugin Unix Domain Socket Registration](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/resource-management/device-plugin.md#unix-socket) mechanism to register the Unix Domain Socket with kubelet. This mechanism would need to be extended to support registration of both CSI volume drivers and device plugins independently.
+
+`Sanitized CSIDriverName` is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver. Exact sanitization method is implementation detail (SHA in the worst case).
 
 Upon initialization of the external “CSI volume driver”, some external component must call the CSI method `GetNodeId` to get the mapping from Kubernetes Node names to CSI driver NodeID. It must then add the CSI driver NodeID to the `csi.volume.kubernetes.io/nodeid` annotation on the Kubernetes Node API object. The key of the annotation must be `csi.volume.kubernetes.io/nodeid`. The value of the annotation is a JSON blob, containing key/value pairs for each CSI driver.
 
@@ -95,8 +97,6 @@ csi.volume.kubernetes.io/nodeid: "{ \"driver1\": \"name1\", \"driver2\": \"name2
 ```
 
 This will enable the component that will issue `ControllerPublishVolume` calls to use the annotation as a mapping from cluster node ID to storage node ID.
-
-`Sanitized CSIDriverName` is CSI driver name that does not contain dangerous character and can be used as annotation name. It can follow the same pattern that we use for [volume plugins](https://github.com/kubernetes/kubernetes/blob/master/pkg/util/strings/escape.go#L27). Too long or too ugly driver names can be rejected, i.e. all components described in this document will report an error and won't talk to this CSI driver. Exact sanitization method is implementation detail (SHA in the worst case).
 
 To enable easy deployment of an external containerized CSI volume driver, the Kubernetes team will provide a sidecar "Kubernetes CSI Helper" container that can manage the unix domain socket registration and NodeId initialization. This is detailed in the “Suggested Mechanism for Deploying CSI Drivers on Kubernetes” section below.
 
@@ -131,7 +131,7 @@ Once the following conditions are true, the external-attacher should call `Contr
 1. A new `VolumeAttachment` Kubernetes API objects is created by Kubernetes attach/detach controller.
 2. The `VolumeAttachment.Spec.Attacher` value in that object corresponds to the name of the external attacher.
 3. The `VolumeAttachment.Status.Attached` value is not yet set to true.
-4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `nodeid.csi.volume.kubernetes.io/<sanitized CSIDriverName>` annotation corresponding to the CSI volume driver so that the CSI Driver’s NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
+4. A Kubernetes Node API object exists with the name matching `VolumeAttachment.Spec.NodeName` and that object contains a `csi.volume.kubernetes.io/nodeid` annotation. This annotation contains a JSON blob, a list of key/value pairs, where one of they keys corresponds with the CSI volume driver name, and the value is the NodeID for that driver. This NodeId mapping can be retrieved and used in the `ControllerPublishVolume` calls.
 5. The `VolumeAttachment.Metadata.DeletionTimestamp` is not set.
 
 Before starting the `ControllerPublishVolume` operation, the external-attacher should add these finalizers to these Kubernetes API objects:
@@ -379,8 +379,8 @@ To deploy a containerized third-party CSI volume driver, it is recommended that 
           * Mount only in “CSI volume driver” container at `/var/lib/kubelet/`
           * Ensure [bi-directional mount propagation](https://kubernetes.io/docs/concepts/storage/volumes/#mount-propagation) is enabled, so that any mounts setup inside this container are propagated back to the host machine.
         * `hostpath` volume
-          * Expose `/var/lib/kubelet/plugins/csi/sockets/[driverName]/kubeletproxy.sock` from the host as `hostPath.type = "DirectoryOrCreate"`.
-          * Mount only in “CSI volume driver” container at `/var/lib/csi/sockets/kubeletproxy.sock`
+          * Expose `/var/lib/kubelet/plugins/[SanitizedCSIDriverName]/` from the host as `hostPath.type = "DirectoryOrCreate"`.
+          * Mount inside “CSI volume driver” container at the path the CSI gRPC socket will be created.
           * This is the primary means of communication between Kubelet and the “CSI volume driver” container (gRPC over UDS).
   * Have cluster admins deploy the above `StatefulSet` and `DaemonSet` to aded support for the storage system in their Kubernetes cluster.
 
